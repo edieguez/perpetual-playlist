@@ -5,10 +5,16 @@
 -- plugins/perpetual-playlist/README.md for usage.
 
 local options = require "mp.options"
+local utils = require "mp.utils"
 
 local opts = {
-    playlist_file = "~/.config/mpv/last_playlist.m3u8",
+    playlist_file = "~/.config/mpv/last_playlist.json",
     osd_duration = 3,
+    -- By default nothing is ever removed from the saved playlist, including
+    -- items that finished playing - matches SPECS.md's "will not be
+    -- deleting items from the playlist". Set to yes to opt back into the
+    -- old behavior of dropping an item once it's been watched to the end.
+    drop_finished_items = false,
 }
 options.read_options(opts, "perpetual_playlist")
 
@@ -32,48 +38,57 @@ local function resolve_path(filename, cwd)
     return filename
 end
 
-local function read_saved_playlist()
-    local items = {}
+-- Saved state is { items = {path, path, ...}, current = <0-indexed> }.
+-- `items` is never reordered or trimmed except when drop_finished_items
+-- opts a file out; `current` independently tracks which item to resume
+-- from, so a finished item sitting earlier in the list doesn't get
+-- replayed ahead of where playback actually left off.
+
+local function read_saved_state()
     local f = io.open(playlist_file, "r")
     if not f then
-        return items
+        return { items = {}, current = 0 }
     end
-    for raw_line in f:lines() do
-        local line = raw_line:match("^%s*(.-)%s*$") -- trim whitespace
-        if line ~= "" and not line:match("^#") then
-            table.insert(items, line)
-        end
-    end
+    local content = f:read("*a")
     f:close()
-    return items
+
+    local ok, parsed = pcall(utils.parse_json, content)
+    if not ok or type(parsed) ~= "table" or type(parsed.items) ~= "table" then
+        return { items = {}, current = 0 }
+    end
+
+    local current = tonumber(parsed.current) or 0
+    if current < 0 then
+        current = 0
+    end
+    if #parsed.items > 0 and current > #parsed.items - 1 then
+        current = #parsed.items - 1
+    end
+    return { items = parsed.items, current = current }
 end
 
-local function save_playlist_items(items)
+local function save_saved_state(items, current)
     if #items == 0 then
         os.remove(playlist_file)
         return
     end
     local f = io.open(playlist_file, "w")
     if f then
-        f:write("#EXTM3U\n")
-        for _, item in ipairs(items) do
-            f:write(item .. "\n")
-        end
+        f:write(utils.format_json({ items = items, current = current }))
         f:close()
     end
 end
 
--- Returns playlist items from a given 0-indexed position onwards.
+-- Returns the full live playlist as resolved paths. Defensive about holes:
 -- mpv's "playlist" property can come back with an unreliable/inconsistent
 -- length right at the very end of shutdown (other scripts already being
--- torn down at that point), so entries are checked defensively rather than
--- assumed present just because their index is within #playlist.
-local function get_remaining_items(from_pos)
+-- torn down at that point), so entries are checked rather than assumed
+-- present just because their index is within #playlist.
+local function snapshot_playlist()
     local playlist = mp.get_property_native("playlist") or {}
     local cwd = mp.get_property("working-directory")
     local items = {}
-    for i = from_pos + 1, #playlist do -- +1: Lua is 1-indexed, from_pos is 0-indexed
-        local entry = playlist[i]
+    for _, entry in ipairs(playlist) do
         if entry and entry.filename then
             table.insert(items, resolve_path(entry.filename, cwd))
         end
@@ -81,54 +96,65 @@ local function get_remaining_items(from_pos)
     return items
 end
 
--- Startup: merge saved playlist with command-line args
+-- Startup: merge saved state with command-line args
 --
 -- Command-line items (if any) are already queued as playlist entries by the
 -- time this callback runs, but mpv's core hasn't necessarily started truly
 -- playing entry 0 yet. Appending to the playlist while that's still
 -- pending can make mpv jump straight to playing entry 1 instead, empirically
--- (verified against mpv 0.41.0) - so the append is deferred until the
--- "file-loaded" event confirms entry 0 has genuinely begun playback, rather
--- than trying to out-guess the race with a fixed delay.
+-- (verified against mpv 0.41.0) - so any further playlist mutation is
+-- deferred until the "file-loaded" event confirms the first item has
+-- genuinely begun playback, rather than trying to out-guess the race with
+-- a fixed delay.
 local pending_append = nil
 
 local function on_startup()
-    local cwd = mp.get_property("working-directory")
-    local cmdline_items = {}
-    for _, item in ipairs(mp.get_property_native("playlist") or {}) do
-        table.insert(cmdline_items, resolve_path(item.filename, cwd))
-    end
+    local cmdline_items = snapshot_playlist()
+    local saved = read_saved_state()
 
-    local saved_items = read_saved_playlist()
-
-    if #saved_items == 0 and #cmdline_items == 0 then
+    if #saved.items == 0 and #cmdline_items == 0 then
         return -- nothing to do
     end
 
-    if #saved_items == 0 then
+    if #saved.items == 0 then
         -- First run, or the previous run finished everything: just persist
         -- what's already playing for future tracking.
-        save_playlist_items(cmdline_items)
+        save_saved_state(cmdline_items, 0)
         return
     end
 
     if #cmdline_items == 0 then
-        -- Plain resume: no new items, load the saved playlist and let mpv
-        -- autoplay item 1, which the end-file retention logic below always
-        -- keeps pointed at "the last watched / next-to-watch" item.
-        mp.commandv("loadlist", playlist_file)
-        mp.osd_message("Resuming saved playlist (" .. #saved_items .. " item(s))", opts.osd_duration)
+        -- Plain resume: load the item we left off on immediately (so
+        -- resume-position kicks in with no delay), then queue the rest of
+        -- the saved list around it once it's actually playing - items
+        -- after it in the original order come next, already-finished ones
+        -- from before it are parked at the end rather than dropped.
+        local items = saved.items
+        local current = saved.current
+        mp.commandv("loadfile", items[current + 1], "replace")
+
+        pending_append = function()
+            for i = current + 2, #items do
+                mp.commandv("loadfile", items[i], "append")
+            end
+            for i = 1, current do
+                mp.commandv("loadfile", items[i], "append")
+            end
+            save_saved_state(items, current)
+        end
+
+        mp.osd_message("Resuming saved playlist (" .. #items .. " item(s))", opts.osd_duration)
         return
     end
 
-    -- Both present: cmdline items are already loading and item 1 will play
-    -- immediately. Don't touch the current playlist with `loadlist` (that
-    -- replaces it and would kill playback) - append the saved items to the
-    -- end instead, once item 0 has actually started (see pending_append).
-    -- They'll play automatically once the cmdline items are exhausted, via
-    -- mpv's normal playlist-advance + keep-open=yes.
+    -- Both present: cmdline items are already loading and will play
+    -- immediately. Don't touch the current playlist with `loadfile
+    -- replace` (that would kill playback) - append the full saved history
+    -- to the end instead, once the cmdline item has actually started (see
+    -- pending_append). It plays automatically once the cmdline items are
+    -- exhausted, via mpv's normal playlist-advance + keep-open=yes.
     pending_append = function()
-        for _, filename in ipairs(saved_items) do
+        for _, filename in ipairs(saved.items) do
             mp.commandv("loadfile", filename, "append")
         end
 
@@ -136,13 +162,13 @@ local function on_startup()
         for _, item in ipairs(cmdline_items) do
             table.insert(combined, item)
         end
-        for _, item in ipairs(saved_items) do
+        for _, item in ipairs(saved.items) do
             table.insert(combined, item)
         end
-        save_playlist_items(combined)
+        save_saved_state(combined, 0)
 
         mp.osd_message(
-            "Playing " .. #cmdline_items .. " new item(s), then resuming " .. #saved_items .. " saved",
+            "Playing " .. #cmdline_items .. " new item(s), then resuming " .. #saved.items .. " saved",
             opts.osd_duration
         )
     end
@@ -158,20 +184,20 @@ mp.register_event("file-loaded", function()
 end)
 
 -- Whenever the current file stops, for any reason: proactively write its
--- exact resume position, and update the saved playlist depending on whether
+-- exact resume position, and update the saved state depending on whether
 -- it actually finished or not.
 --
 -- By the time the "end-file" event fires, mpv has already fully unloaded
 -- the old file - `path`/`time-pos` read back as nil, and `playlist-pos`
 -- already points at whatever comes next, not the entry that just ended
--- (verified empirically against mpv 0.41.0). So both the resume-position
--- write and the pos/count used for retention have to be captured earlier,
--- from the "on_unload" hook, which fires while the about-to-be-unloaded
--- file is still current. Even there, `playlist-pos` has already advanced -
--- `playlist-playing-pos` is the one that still correctly refers to the
--- entry actually being unloaded.
+-- (verified empirically against mpv 0.41.0). So the resume-position write
+-- and the playlist/position snapshot used below have to be captured
+-- earlier, from the "on_unload" hook, which fires while the
+-- about-to-be-unloaded file is still current. Even there, `playlist-pos`
+-- has already advanced - `playlist-playing-pos` is the one that still
+-- correctly refers to the entry actually being unloaded.
+local last_items = nil
 local last_pos = nil
-local last_count = nil
 
 mp.add_hook("on_unload", 50, function()
     -- mpv's save-position-on-quit=yes only writes a watch_later entry
@@ -179,46 +205,88 @@ mp.add_hook("on_unload", 50, function()
     -- navigation (N/P, playlist_manager jumps, natural eof) also leave a
     -- resumable exact-position entry, not just clean quits.
     mp.command("write-watch-later-config")
+    last_items = snapshot_playlist()
     last_pos = mp.get_property_number("playlist-playing-pos", nil)
-    last_count = mp.get_property_number("playlist-count", nil)
 end)
 
-mp.register_event("end-file", function(event)
-    local pos = last_pos or mp.get_property_number("playlist-pos", 0)
-    local count = last_count or mp.get_property_number("playlist-count", 0)
-
-    if event.reason == "eof" then
-        -- Item genuinely finished: drop it from the saved list.
-        if pos >= count - 1 then
-            save_playlist_items({})
+-- Shared by both the mid-playlist end-file(eof) case and the true-last-item
+-- eof-reached case below: either drop the finished item (opted in) or keep
+-- everything as-is (default).
+local function handle_finished(items, pos)
+    if opts.drop_finished_items then
+        -- Remove it from both the saved state and mpv's own live playlist.
+        -- Without the latter, the next transition's snapshot_playlist()
+        -- would just read it right back out of mpv's still-intact live
+        -- playlist and silently undo the drop.
+        if pos >= 0 and pos < #items then
+            table.remove(items, pos + 1) -- +1: Lua is 1-indexed
+            mp.commandv("playlist-remove", pos)
+        end
+        if #items == 0 then
+            save_saved_state({}, 0)
             finished_all = true
         else
-            save_playlist_items(get_remaining_items(pos + 1))
+            save_saved_state(items, math.min(pos, #items - 1))
             finished_all = false
         end
     else
+        -- Keep every item, including one that just finished playing, so
+        -- nothing is ever silently removed from the saved playlist.
+        save_saved_state(items, pos)
+        finished_all = false
+    end
+end
+
+mp.register_event("end-file", function(event)
+    local items = last_items or snapshot_playlist()
+    local pos = last_pos or 0
+
+    if event.reason == "eof" then
+        handle_finished(items, pos)
+    else
         -- "stop" (manual next/prev, playlist_manager jump), "quit", "error":
-        -- the item did not finish, keep it (and everything after it) so it
-        -- can be resumed later.
-        save_playlist_items(get_remaining_items(pos))
+        -- the item did not finish, always keep it (and everything else)
+        -- regardless of drop_finished_items, since it never finished
+        -- playing in the first place.
+        save_saved_state(items, pos)
         finished_all = false
     end
 end)
 
+-- The true last item in the playlist is a special case: with keep-open=yes,
+-- mpv freezes on its last frame instead of unloading it, so on_unload/
+-- end-file never fire for that specific transition (verified empirically -
+-- confirmed no "end-file" event at all when the final item finishes).
+-- eof-reached is the one property that still flips true for it, but it also
+-- flips true+false for every ordinary mid-playlist transition (already
+-- handled above), so this only acts when it's genuinely the last entry.
+mp.observe_property("eof-reached", "bool", function(_, reached)
+    if not reached or finished_all then
+        return
+    end
+    local count = mp.get_property_number("playlist-count", 0)
+    local pos = mp.get_property_number("playlist-playing-pos", -1)
+    if pos < 0 or pos + 1 < count then
+        return -- not the last item; the normal end-file path already handled it
+    end
+    handle_finished(snapshot_playlist(), pos)
+end)
+
 -- Defensive backstop in case some quit path doesn't cleanly emit end-file
--- with a reason before shutdown fires. save_playlist_items is a full
+-- with a reason before shutdown fires. save_saved_state is a full
 -- overwrite, so a redundant call here is harmless. Wrapped in pcall: this
 -- is the very last event mpv fires before exiting, other scripts are
 -- already being torn down alongside it, and mpv's own APIs are less
--- reliable at this point (see get_remaining_items) - any unexpected error
+-- reliable at this point (see snapshot_playlist) - any unexpected error
 -- here should never surface as a visible stack trace on quit.
 mp.register_event("shutdown", function()
     local ok, err = pcall(function()
         if finished_all then
             return
         end
-        local pos = mp.get_property_number("playlist-playing-pos", 0)
-        save_playlist_items(get_remaining_items(pos))
+        local items = last_items or snapshot_playlist()
+        local pos = last_pos or 0
+        save_saved_state(items, pos)
     end)
     if not ok then
         require("mp.msg").warn("shutdown handler failed: " .. tostring(err))

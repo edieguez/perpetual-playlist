@@ -7,8 +7,10 @@ accident).
 ## What it does
 
 - **Persists the playlist.** On quit, on natural end-of-file, and whenever
-  you navigate to another item, the remaining playlist is saved to
-  `~/.config/mpv/last_playlist.m3u8`.
+  you navigate to another item, the full playlist (plus which item to
+  resume from) is saved to `~/.config/mpv/last_playlist.json`. Finished
+  items are kept, not deleted - set `drop_finished_items=yes` to opt back
+  into removing them (see Configuration).
 - **Resumes from the exact position.** Rides on mpv's native
   `watch_later`/`save-position-on-quit` mechanism, but proactively writes it
   on every item transition (not just on quit), so resuming after a manual
@@ -21,7 +23,8 @@ accident).
 1. Copy or symlink `scripts/perpetual_playlist.lua` into mpv's `scripts/`
    directory.
 2. (Optional) Copy `script-opts/perpetual_playlist.conf.template` to
-   `script-opts/perpetual_playlist.conf` to override the defaults.
+   `script-opts/perpetual_playlist.conf` to override the defaults (see
+   Configuration).
 3. Add these to `mpv.conf` (or an included config file):
    ```
    # Required for the plugin to get a chance to run and resume the saved
@@ -46,10 +49,18 @@ accident).
   first). Requires `input-ipc-server` to be set (see Installation) and a
   `nc` with unix-socket (`-U`) support on `PATH`.
 
+## Configuration
+
+See `script-opts/perpetual_playlist.conf.template` for all options and
+their defaults. Notably `drop_finished_items` (default `no`): finished
+items are kept in the saved playlist by default, not deleted; set to `yes`
+to have them dropped once fully watched instead.
+
 ## Out of scope
 
-Not a playlist manager - it only adds items and resumes playback, it never
-deletes items on its own.
+Not a playlist manager - it only adds items and resumes playback. By
+default it never deletes items on its own either (see
+`drop_finished_items` above).
 
 ## License
 
