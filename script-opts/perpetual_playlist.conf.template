@@ -1,0 +1,12 @@
+# perpetual_playlist.lua options
+#
+# Copy this file to ~/.config/mpv/script-opts/perpetual_playlist.conf and
+# uncomment/edit as needed. mpv only reads the top-level script-opts/ dir,
+# never the copy inside plugins/ - this file just documents the defaults.
+
+# Where the persisted playlist is stored (m3u8 format).
+#playlist_file=~/.config/mpv/last_playlist.m3u8
+
+# How long (seconds) the "resuming saved playlist" / "playing N new items"
+# OSD messages stay on screen.
+#osd_duration=3
