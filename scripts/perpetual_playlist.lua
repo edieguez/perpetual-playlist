@@ -124,21 +124,23 @@ local function on_startup()
     end
 
     if #cmdline_items == 0 then
-        -- Plain resume: load the item we left off on immediately (so
-        -- resume-position kicks in with no delay), then queue the rest of
-        -- the saved list around it once it's actually playing - items
-        -- after it in the original order come next, already-finished ones
-        -- from before it are parked at the end rather than dropped.
+        -- Plain resume: load every item back in its exact saved order -
+        -- item 1 starts playing immediately (unavoidable, loading always
+        -- plays what it loads), the rest are appended after it once that's
+        -- confirmed (see pending_append). Once the full list is rebuilt,
+        -- jump to `current` to actually resume where playback left off;
+        -- native per-file watch_later resume applies the same way it does
+        -- for any other jump to that item.
         local items = saved.items
         local current = saved.current
-        mp.commandv("loadfile", items[current + 1], "replace")
+        mp.commandv("loadfile", items[1], "replace")
 
         pending_append = function()
-            for i = current + 2, #items do
+            for i = 2, #items do
                 mp.commandv("loadfile", items[i], "append")
             end
-            for i = 1, current do
-                mp.commandv("loadfile", items[i], "append")
+            if current > 0 then
+                mp.set_property_number("playlist-pos", current)
             end
             save_saved_state(items, current)
         end
