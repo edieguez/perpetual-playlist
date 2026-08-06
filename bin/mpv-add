@@ -1,0 +1,47 @@
+#!/bin/sh
+# plugins/perpetual-playlist/bin/mpv-add
+#
+# Add a URL/path to the running mpv instance's playlist (appended to the
+# end), or start a fresh mpv instance if none is running - the
+# perpetual-playlist Lua script's startup logic then puts it first and
+# plays it immediately.
+#
+# Requires `input-ipc-server=~/.config/mpv/mpv.sock` in mpv's config.
+set -eu
+
+SOCKET="${MPV_SOCKET:-$HOME/.config/mpv/mpv.sock}"
+
+usage() {
+    echo "Usage: mpv-add <url-or-path>" >&2
+    exit 1
+}
+
+[ $# -eq 1 ] || usage
+URL=$1
+# Strip stray newlines defensively - URLs shouldn't contain them, but a
+# clipboard/argument mishap must not break the single-line IPC protocol.
+URL=$(printf '%s' "$URL" | tr -d '\n\r')
+
+json_escape() {
+    printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
+}
+
+ESCAPED=$(json_escape "$URL")
+# Note: command substitution strips the trailing newline, so it's added
+# back explicitly at the point of sending - mpv's JSON IPC requires each
+# command to be newline-terminated to be processed.
+COMMAND=$(printf '{"command": ["loadfile", "%s", "append-play"]}' "$ESCAPED")
+
+# Try to talk to a running instance first. `nc -U -z` is unreliable for
+# unix sockets on macOS's BSD nc (returns failure even with a live
+# listener), so we attempt the real send and branch on its exit code
+# instead of doing a separate liveness probe. A dead/absent socket (stale
+# file from a crashed mpv, or no file at all) both surface as the same
+# connect failure, so no special staleness handling is needed - mpv itself
+# removes and recreates the socket file on its next startup.
+if printf '%s\n' "$COMMAND" | nc -U -w 1 "$SOCKET" >/dev/null 2>&1; then
+    echo "Added to running mpv: $URL"
+else
+    nohup mpv "$URL" >/dev/null 2>&1 &
+    echo "Started new mpv instance with: $URL"
+fi
