@@ -153,18 +153,32 @@ end)
 -- Whenever the current file stops, for any reason: proactively write its
 -- exact resume position, and update the saved playlist depending on whether
 -- it actually finished or not.
+--
+-- By the time the "end-file" event fires, mpv has already fully unloaded
+-- the old file - `path`/`time-pos` read back as nil, and `playlist-pos`
+-- already points at whatever comes next, not the entry that just ended
+-- (verified empirically against mpv 0.41.0). So both the resume-position
+-- write and the pos/count used for retention have to be captured earlier,
+-- from the "on_unload" hook, which fires while the about-to-be-unloaded
+-- file is still current. Even there, `playlist-pos` has already advanced -
+-- `playlist-playing-pos` is the one that still correctly refers to the
+-- entry actually being unloaded.
+local last_pos = nil
+local last_count = nil
 
-mp.register_event("end-file", function(event)
+mp.add_hook("on_unload", 50, function()
     -- mpv's save-position-on-quit=yes only writes a watch_later entry
     -- natively at process shutdown. This call is what makes mid-session
     -- navigation (N/P, playlist_manager jumps, natural eof) also leave a
-    -- resumable exact-position entry, not just clean quits. playlist-pos
-    -- still refers to the entry that just ended at this point - mpv only
-    -- advances it once the next file actually starts loading.
+    -- resumable exact-position entry, not just clean quits.
     mp.command("write-watch-later-config")
+    last_pos = mp.get_property_number("playlist-playing-pos", nil)
+    last_count = mp.get_property_number("playlist-count", nil)
+end)
 
-    local pos = mp.get_property_number("playlist-pos", 0)
-    local count = mp.get_property_number("playlist-count", 0)
+mp.register_event("end-file", function(event)
+    local pos = last_pos or mp.get_property_number("playlist-pos", 0)
+    local count = last_count or mp.get_property_number("playlist-count", 0)
 
     if event.reason == "eof" then
         -- Item genuinely finished: drop it from the saved list.
@@ -192,6 +206,6 @@ mp.register_event("shutdown", function()
     if finished_all then
         return
     end
-    local pos = mp.get_property_number("playlist-pos", 0)
+    local pos = mp.get_property_number("playlist-playing-pos", 0)
     save_playlist_items(get_remaining_items(pos))
 end)
