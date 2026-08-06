@@ -63,13 +63,20 @@ local function save_playlist_items(items)
     end
 end
 
--- Returns playlist items from a given 0-indexed position onwards
+-- Returns playlist items from a given 0-indexed position onwards.
+-- mpv's "playlist" property can come back with an unreliable/inconsistent
+-- length right at the very end of shutdown (other scripts already being
+-- torn down at that point), so entries are checked defensively rather than
+-- assumed present just because their index is within #playlist.
 local function get_remaining_items(from_pos)
     local playlist = mp.get_property_native("playlist") or {}
     local cwd = mp.get_property("working-directory")
     local items = {}
     for i = from_pos + 1, #playlist do -- +1: Lua is 1-indexed, from_pos is 0-indexed
-        table.insert(items, resolve_path(playlist[i].filename, cwd))
+        local entry = playlist[i]
+        if entry and entry.filename then
+            table.insert(items, resolve_path(entry.filename, cwd))
+        end
     end
     return items
 end
@@ -200,12 +207,20 @@ end)
 
 -- Defensive backstop in case some quit path doesn't cleanly emit end-file
 -- with a reason before shutdown fires. save_playlist_items is a full
--- overwrite, so a redundant call here is harmless.
-
+-- overwrite, so a redundant call here is harmless. Wrapped in pcall: this
+-- is the very last event mpv fires before exiting, other scripts are
+-- already being torn down alongside it, and mpv's own APIs are less
+-- reliable at this point (see get_remaining_items) - any unexpected error
+-- here should never surface as a visible stack trace on quit.
 mp.register_event("shutdown", function()
-    if finished_all then
-        return
+    local ok, err = pcall(function()
+        if finished_all then
+            return
+        end
+        local pos = mp.get_property_number("playlist-playing-pos", 0)
+        save_playlist_items(get_remaining_items(pos))
+    end)
+    if not ok then
+        require("mp.msg").warn("shutdown handler failed: " .. tostring(err))
     end
-    local pos = mp.get_property_number("playlist-playing-pos", 0)
-    save_playlist_items(get_remaining_items(pos))
 end)
