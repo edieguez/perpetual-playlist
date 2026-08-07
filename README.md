@@ -43,11 +43,12 @@ accident).
   [playlist-manager](https://github.com/edieguez/playlist-manager), its
   `ctrl+v` binding appends the clipboard URL to the end of the playlist.
   Otherwise, bind a key to `loadfile <url> append-play` yourself.
-- **Don't know if mpv is open:** run `bin/mpv-add <url>`. It appends to the
-  running instance over mpv's IPC socket if one exists, or launches a fresh
-  `mpv <url>` otherwise (which this plugin's cold-start logic then plays
-  first). Requires `input-ipc-server` to be set (see Installation) and a
-  `nc` with unix-socket (`-U`) support on `PATH`.
+- **Don't know if mpv is open:** run `bin/mpv-add <url> [url ...]`. It
+  appends all of them, in order, to the running instance over mpv's IPC
+  socket if one exists, or launches a fresh `mpv <url> [url ...]`
+  otherwise (which this plugin's cold-start logic then plays in order).
+  Requires `input-ipc-server` to be set (see Installation) and a `nc` with
+  unix-socket (`-U`) support on `PATH`.
 
 ## Configuration
 
