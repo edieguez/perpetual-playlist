@@ -23,16 +23,21 @@ json_escape() {
 }
 
 # Build one IPC command per item, each on its own line, sent over a single
-# connection - `append-play` is safe to use for every item (not just the
-# first) since it only actually starts playback if nothing is currently
-# playing; once the first item starts, later ones just append behind it.
+# connection - routed through playlist_manager.lua's "mpv-add-item" script
+# message (rather than a raw `loadfile`) so an item already in the running
+# instance's playlist gets ignored, the same way ctrl+v/paste-url ignores
+# one, instead of being added and only cleaned up after the fact. Safe to
+# use for every item (not just the first): loadfile inside that handler
+# uses append-play, which only actually starts playback if nothing is
+# currently playing - once the first item starts, later ones just append
+# behind it.
 COMMANDS=""
 for item in "$@"; do
     # Strip stray newlines defensively - URLs shouldn't contain them, but a
     # clipboard/argument mishap must not break the single-line IPC protocol.
     item=$(printf '%s' "$item" | tr -d '\n\r')
     escaped=$(json_escape "$item")
-    line=$(printf '{"command": ["loadfile", "%s", "append-play"]}' "$escaped")
+    line=$(printf '{"command": ["script-message-to", "playlist_manager", "mpv-add-item", "%s"]}' "$escaped")
     COMMANDS="$COMMANDS$line
 "
 done
@@ -45,7 +50,7 @@ done
 # connect failure, so no special staleness handling is needed - mpv itself
 # removes and recreates the socket file on its next startup.
 if printf '%s' "$COMMANDS" | nc -U -w 1 "$SOCKET" >/dev/null 2>&1; then
-    echo "Added $# item(s) to running mpv"
+    echo "Sent $# item(s) to running mpv"
 else
     nohup mpv "$@" >/dev/null 2>&1 &
     echo "Started new mpv instance with $# item(s)"
