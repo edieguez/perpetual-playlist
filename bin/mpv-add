@@ -2,9 +2,12 @@
 # plugins/perpetual-playlist/bin/mpv-add
 #
 # Add one or more URLs/paths to the running mpv instance's playlist
-# (appended to the end, in order), or start a fresh mpv instance with all
-# of them if none is running - the perpetual-playlist Lua script's startup
-# logic then puts them first and plays them in order.
+# (appended to the end, in order - or, with -n/--next, inserted right
+# after whatever's currently playing, in order), or start a fresh mpv
+# instance with all of them if none is running - the perpetual-playlist
+# Lua script's startup logic then puts them first and plays them in order
+# regardless of -n/--next (cmdline items already play first on a fresh
+# instance, which is the same "play next" outcome).
 #
 # Requires `input-ipc-server=~/.config/mpv/mpv.sock` in mpv's config.
 set -eu
@@ -12,9 +15,17 @@ set -eu
 SOCKET="${MPV_SOCKET:-$HOME/.config/mpv/mpv.sock}"
 
 usage() {
-    echo "Usage: mpv-add <url-or-path> [url-or-path ...]" >&2
+    echo "Usage: mpv-add [-n|--next] <url-or-path> [url-or-path ...]" >&2
     exit 1
 }
+
+MESSAGE="mpv-add-item"
+case "${1:-}" in
+    -n|--next)
+        MESSAGE="mpv-add-item-next"
+        shift
+        ;;
+esac
 
 [ $# -ge 1 ] || usage
 
@@ -23,21 +34,20 @@ json_escape() {
 }
 
 # Build one IPC command per item, each on its own line, sent over a single
-# connection - routed through playlist_manager.lua's "mpv-add-item" script
-# message (rather than a raw `loadfile`) so an item already in the running
-# instance's playlist gets ignored, the same way ctrl+v/paste-url ignores
-# one, instead of being added and only cleaned up after the fact. Safe to
-# use for every item (not just the first): loadfile inside that handler
-# uses append-play, which only actually starts playback if nothing is
-# currently playing - once the first item starts, later ones just append
-# behind it.
+# connection - routed through playlist_manager.lua's "mpv-add-item"/
+# "mpv-add-item-next" script messages (rather than a raw `loadfile`) so an
+# item already in the running instance's playlist gets ignored, the same
+# way ctrl+v/paste-url ignores one, instead of being added and only
+# cleaned up after the fact. Items are sent in the order given either way
+# - the Lua handler on the receiving end is what keeps -n/--next items in
+# order relative to each other, not this loop.
 COMMANDS=""
 for item in "$@"; do
     # Strip stray newlines defensively - URLs shouldn't contain them, but a
     # clipboard/argument mishap must not break the single-line IPC protocol.
     item=$(printf '%s' "$item" | tr -d '\n\r')
     escaped=$(json_escape "$item")
-    line=$(printf '{"command": ["script-message-to", "playlist_manager", "mpv-add-item", "%s"]}' "$escaped")
+    line=$(printf '{"command": ["script-message-to", "playlist_manager", "%s", "%s"]}' "$MESSAGE" "$escaped")
     COMMANDS="$COMMANDS$line
 "
 done
