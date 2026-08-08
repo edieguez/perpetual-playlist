@@ -38,6 +38,27 @@ local function resolve_path(filename, cwd)
     return filename
 end
 
+-- Returns a new list with duplicate entries removed, keeping the first
+-- occurrence of each. `seed_seen`, if given, is a list of entries treated
+-- as already-seen (e.g. cmdline items queued ahead of a saved list), so
+-- anything in `items` that duplicates one of those is dropped too.
+local function dedupe_items(items, seed_seen)
+    local seen = {}
+    if seed_seen then
+        for _, item in ipairs(seed_seen) do
+            seen[item] = true
+        end
+    end
+    local result = {}
+    for _, item in ipairs(items) do
+        if not seen[item] then
+            seen[item] = true
+            table.insert(result, item)
+        end
+    end
+    return result
+end
+
 -- Saved state is { items = {path, path, ...}, current = <0-indexed> }.
 -- `items` is never reordered or trimmed except when drop_finished_items
 -- opts a file out; `current` independently tracks which item to resume
@@ -64,7 +85,24 @@ local function read_saved_state()
     if #parsed.items > 0 and current > #parsed.items - 1 then
         current = #parsed.items - 1
     end
-    return { items = parsed.items, current = current }
+
+    -- Defensive: a save written before duplicate ingestion was fixed (or
+    -- corrupted some other way) may already have duplicate entries baked
+    -- in. Dedupe on read so it self-heals on next load rather than
+    -- persisting forever. `current` is remapped by value, not index, so it
+    -- still points at the same logical item after dedup.
+    local current_item = parsed.items[current + 1]
+    local items = dedupe_items(parsed.items)
+    if current_item then
+        for i, item in ipairs(items) do
+            if item == current_item then
+                current = i - 1
+                break
+            end
+        end
+    end
+
+    return { items = items, current = current }
 end
 
 local function save_saved_state(items, current)
@@ -155,8 +193,17 @@ local function on_startup()
     -- to the end instead, once the cmdline item has actually started (see
     -- pending_append). It plays automatically once the cmdline items are
     -- exhausted, via mpv's normal playlist-advance + keep-open=yes.
+    --
+    -- Saved items that duplicate a cmdline item (e.g. `mpv-add` on
+    -- something already in the saved playlist, starting a fresh instance)
+    -- are dropped here, before they're ever live-appended or persisted -
+    -- relying on playlist_manager.lua's passive post-hoc dedup alone would
+    -- leave the duplicate baked into last_playlist.json, since that
+    -- cleanup only touches mpv's live playlist and runs after this
+    -- function has already saved state to disk.
     pending_append = function()
-        for _, filename in ipairs(saved.items) do
+        local saved_unique = dedupe_items(saved.items, cmdline_items)
+        for _, filename in ipairs(saved_unique) do
             mp.commandv("loadfile", filename, "append")
         end
 
@@ -164,13 +211,13 @@ local function on_startup()
         for _, item in ipairs(cmdline_items) do
             table.insert(combined, item)
         end
-        for _, item in ipairs(saved.items) do
+        for _, item in ipairs(saved_unique) do
             table.insert(combined, item)
         end
         save_saved_state(combined, 0)
 
         mp.osd_message(
-            "Playing " .. #cmdline_items .. " new item(s), then resuming " .. #saved.items .. " saved",
+            "Playing " .. #cmdline_items .. " new item(s), then resuming " .. #saved_unique .. " saved",
             opts.osd_duration
         )
     end
