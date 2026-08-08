@@ -20,6 +20,15 @@ usage() {
 }
 
 MESSAGE="mpv-add-item"
+# One ID per invocation (this script's own PID - unique per invocation,
+# no portability concerns unlike a nanosecond timestamp, which BSD/macOS
+# `date` doesn't support the way GNU `date` does), so playlist_manager.lua
+# can tell "more items from this same mpv-add call" (share this ID, stay
+# in the order given relative to each other) apart from "a separate,
+# later mpv-add -n call" (different ID, always inserts right after
+# whatever's currently playing, displacing anything queued there instead
+# of landing after it). Unused/ignored by the plain-append handler.
+BATCH_ID="$$"
 case "${1:-}" in
     -n|--next)
         MESSAGE="mpv-add-item-next"
@@ -47,7 +56,7 @@ for item in "$@"; do
     # clipboard/argument mishap must not break the single-line IPC protocol.
     item=$(printf '%s' "$item" | tr -d '\n\r')
     escaped=$(json_escape "$item")
-    line=$(printf '{"command": ["script-message-to", "playlist_manager", "%s", "%s"]}' "$MESSAGE" "$escaped")
+    line=$(printf '{"command": ["script-message-to", "playlist_manager", "%s", "%s", "%s"]}' "$MESSAGE" "$escaped" "$BATCH_ID")
     COMMANDS="$COMMANDS$line
 "
 done
