@@ -42,23 +42,33 @@ json_escape() {
     printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
 }
 
-# Build one IPC command per item, each on its own line, sent over a single
-# connection - routed through playlist_manager.lua's "mpv-add-item"/
+# Build one IPC command per item per target, each on its own line, sent
+# over a single connection - routed through "mpv-add-item"/
 # "mpv-add-item-next" script messages (rather than a raw `loadfile`) so an
 # item already in the running instance's playlist gets ignored, the same
 # way ctrl+v/paste-url ignores one, instead of being added and only
 # cleaned up after the fact. Items are sent in the order given either way
 # - the Lua handler on the receiving end is what keeps -n/--next items in
 # order relative to each other, not this loop.
+#
+# Sent to BOTH playlist_manager and perpetual_playlist: this submodule
+# (perpetual-playlist) must work standalone, without playlist-manager
+# installed, so perpetual_playlist.lua has its own copy of these
+# handlers. script-message-to is fire-and-forget and silently no-ops for
+# whichever target isn't actually loaded - if only one is loaded, only it
+# adds the item; if both are, each one's own "already in playlist" check
+# prevents a double-add.
 COMMANDS=""
 for item in "$@"; do
     # Strip stray newlines defensively - URLs shouldn't contain them, but a
     # clipboard/argument mishap must not break the single-line IPC protocol.
     item=$(printf '%s' "$item" | tr -d '\n\r')
     escaped=$(json_escape "$item")
-    line=$(printf '{"command": ["script-message-to", "playlist_manager", "%s", "%s", "%s"]}' "$MESSAGE" "$escaped" "$BATCH_ID")
-    COMMANDS="$COMMANDS$line
+    for target in playlist_manager perpetual_playlist; do
+        line=$(printf '{"command": ["script-message-to", "%s", "%s", "%s", "%s"]}' "$target" "$MESSAGE" "$escaped" "$BATCH_ID")
+        COMMANDS="$COMMANDS$line
 "
+    done
 done
 
 # Try to talk to a running instance first. `nc -U -z` is unreliable for
