@@ -253,7 +253,30 @@ mp.add_hook("on_unload", 50, function()
     -- natively at process shutdown. This call is what makes mid-session
     -- navigation (N/P, playlist_manager jumps, natural eof) also leave a
     -- resumable exact-position entry, not just clean quits.
-    mp.command("write-watch-later-config")
+    --
+    -- Except when the file being unloaded has already fully finished
+    -- (eof-reached) - writing a normal resume entry then would capture
+    -- time-pos at essentially the file's own duration, so mpv's own
+    -- --resume-playback would honor "resume right at the end" the next
+    -- time this item is loaded, making a fully-watched video unwatchable
+    -- a second time. Delete any existing entry instead, so a later replay
+    -- starts from the beginning - mpv's own default when no watch_later
+    -- entry exists. This has to live here rather than only in
+    -- handle_finished() below (tried first, confirmed insufficient by
+    -- testing): eof-reached also stays true for a last-item file sitting
+    -- frozen under keep-open, and unloading it *again* later (e.g.
+    -- reloading it, or any other transition away from that frozen state)
+    -- re-enters on_unload without necessarily re-entering handle_finished
+    -- - a second unconditional write would otherwise silently recreate
+    -- the exact bad entry handle_finished had already deleted once.
+    if mp.get_property_bool("eof-reached", false) then
+        local current_file = mp.get_property("path")
+        if current_file then
+            mp.commandv("delete-watch-later-config", current_file)
+        end
+    else
+        mp.command("write-watch-later-config")
+    end
     last_items = snapshot_playlist()
     last_pos = mp.get_property_number("playlist-playing-pos", nil)
 end)
