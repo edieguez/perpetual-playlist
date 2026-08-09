@@ -38,21 +38,40 @@ local function resolve_path(filename, cwd)
     return filename
 end
 
--- Returns a new list with duplicate entries removed, keeping the first
--- occurrence of each. `seed_seen`, if given, is a list of entries treated
--- as already-seen (e.g. cmdline items queued ahead of a saved list), so
--- anything in `items` that duplicates one of those is dropped too.
+-- Mirrors plugins/playlist-manager/scripts/playlist_manager.lua's own
+-- normalize_url: mpv/ytdl_hook can leave a "ytdl://" prefix on a live
+-- playlist entry's path that never made it into last_playlist.json's
+-- plain URL form (or vice versa). Comparing on this normalized form here
+-- too keeps this script's duplicate detection in agreement with
+-- playlist_manager.lua's own - without it, a "duplicate" this script
+-- misses could still get silently removed by playlist_manager.lua's
+-- dedup_playlist() (fires on every playlist-count rise) after this
+-- script has already computed items/current assuming both copies exist,
+-- desyncing the live playlist from what gets jumped to and persisted.
+local function normalize_url(path)
+    if not path then
+        return path
+    end
+    return path:gsub("^ytdl://https?://", "https://"):gsub("^ytdl://", "https://")
+end
+
+-- Returns a new list with duplicate entries removed (compared via
+-- normalize_url), keeping the first occurrence of each. `seed_seen`, if
+-- given, is a list of entries treated as already-seen (e.g. cmdline items
+-- queued ahead of a saved list), so anything in `items` that duplicates
+-- one of those is dropped too.
 local function dedupe_items(items, seed_seen)
     local seen = {}
     if seed_seen then
         for _, item in ipairs(seed_seen) do
-            seen[item] = true
+            seen[normalize_url(item)] = true
         end
     end
     local result = {}
     for _, item in ipairs(items) do
-        if not seen[item] then
-            seen[item] = true
+        local key = normalize_url(item)
+        if not seen[key] then
+            seen[key] = true
             table.insert(result, item)
         end
     end
@@ -94,8 +113,9 @@ local function read_saved_state()
     local current_item = parsed.items[current + 1]
     local items = dedupe_items(parsed.items)
     if current_item then
+        local current_key = normalize_url(current_item)
         for i, item in ipairs(items) do
-            if item == current_item then
+            if normalize_url(item) == current_key then
                 current = i - 1
                 break
             end
@@ -161,65 +181,74 @@ local function on_startup()
         return
     end
 
-    if #cmdline_items == 0 then
-        -- Plain resume: load every item back in its exact saved order -
-        -- item 1 starts playing immediately (unavoidable, loading always
-        -- plays what it loads), the rest are appended after it once that's
-        -- confirmed (see pending_append). Once the full list is rebuilt,
-        -- jump to `current` to actually resume where playback left off;
-        -- native per-file watch_later resume applies the same way it does
-        -- for any other jump to that item.
-        local items = saved.items
-        local current = saved.current
-        mp.commandv("loadfile", items[1], "replace")
+    -- Both the plain-resume case and the cmdline-items-present case boil
+    -- down to the same thing: rebuild `items` (a `loadfile ... replace` on
+    -- entry 1, the rest appended once that's confirmed - see
+    -- pending_append), then jump to `current` to start playback at the
+    -- right spot. "replace" safely discards whatever mpv had already
+    -- queued at position 0 from cmdline args, if any - any in-flight
+    -- resolution mpv's core may have already kicked off for them gets
+    -- discarded harmlessly.
+    --
+    -- When cmdline items are present, they're spliced into `items` right
+    -- at `current`'s own slot, rather than appended after everything or
+    -- inserted after it: this pushes the item the user was actually on
+    -- (and everything after it) one slot later, without touching anything
+    -- before it. `current` itself doesn't need to change - it now simply
+    -- points at the first newly-added item instead of at the old one. Net
+    -- effect once playback starts: the new item(s) play first (nothing
+    -- has to finish before they do), then ordinary playlist-advance
+    -- carries straight on into the item the user was actually on and the
+    -- rest of the saved history from there - already-watched items before
+    -- `current` are never replayed, and nothing needs a special skip
+    -- after the fact, since it was never put in the way to begin with.
+    --
+    -- Cmdline items that duplicate something already in the saved history
+    -- are dropped here rather than spliced in a second time - relying on
+    -- playlist_manager.lua's passive post-hoc dedup alone would leave the
+    -- duplicate baked into last_playlist.json, since that cleanup only
+    -- touches mpv's live playlist and runs after this function has already
+    -- saved state to disk.
+    local items = saved.items
+    local current = saved.current
+    local new_count = 0
 
-        pending_append = function()
-            for i = 2, #items do
-                mp.commandv("loadfile", items[i], "append")
-            end
-            if current > 0 then
-                mp.set_property_number("playlist-pos", current)
-            end
-            save_saved_state(items, current)
+    if #cmdline_items > 0 then
+        local cmdline_unique = dedupe_items(cmdline_items, saved.items)
+        new_count = #cmdline_unique
+
+        local merged = {}
+        for i = 1, current do -- items before `current` (0-indexed): untouched history
+            table.insert(merged, saved.items[i])
         end
-
-        mp.osd_message("Resuming saved playlist (" .. #items .. " item(s))", opts.osd_duration)
-        return
+        for _, item in ipairs(cmdline_unique) do
+            table.insert(merged, item)
+        end
+        for i = current + 1, #saved.items do -- `current` onward (0-indexed): unchanged relative order
+            table.insert(merged, saved.items[i])
+        end
+        items = merged
     end
 
-    -- Both present: cmdline items are already loading and will play
-    -- immediately. Don't touch the current playlist with `loadfile
-    -- replace` (that would kill playback) - append the full saved history
-    -- to the end instead, once the cmdline item has actually started (see
-    -- pending_append). It plays automatically once the cmdline items are
-    -- exhausted, via mpv's normal playlist-advance + keep-open=yes.
-    --
-    -- Saved items that duplicate a cmdline item (e.g. `mpv-add` on
-    -- something already in the saved playlist, starting a fresh instance)
-    -- are dropped here, before they're ever live-appended or persisted -
-    -- relying on playlist_manager.lua's passive post-hoc dedup alone would
-    -- leave the duplicate baked into last_playlist.json, since that
-    -- cleanup only touches mpv's live playlist and runs after this
-    -- function has already saved state to disk.
+    mp.commandv("loadfile", items[1], "replace")
+
     pending_append = function()
-        local saved_unique = dedupe_items(saved.items, cmdline_items)
-        for _, filename in ipairs(saved_unique) do
-            mp.commandv("loadfile", filename, "append")
+        for i = 2, #items do
+            mp.commandv("loadfile", items[i], "append")
         end
+        if current > 0 then
+            mp.set_property_number("playlist-pos", current)
+        end
+        save_saved_state(items, current)
 
-        local combined = {}
-        for _, item in ipairs(cmdline_items) do
-            table.insert(combined, item)
+        if new_count > 0 then
+            mp.osd_message(
+                "Playing " .. new_count .. " new item(s), then resuming " .. #items .. " saved",
+                opts.osd_duration
+            )
+        else
+            mp.osd_message("Resuming saved playlist (" .. #items .. " item(s))", opts.osd_duration)
         end
-        for _, item in ipairs(saved_unique) do
-            table.insert(combined, item)
-        end
-        save_saved_state(combined, 0)
-
-        mp.osd_message(
-            "Playing " .. #cmdline_items .. " new item(s), then resuming " .. #saved_unique .. " saved",
-            opts.osd_duration
-        )
     end
 end
 

@@ -15,8 +15,12 @@ accident).
   `watch_later`/`save-position-on-quit` mechanism, but proactively writes it
   on every item transition (not just on quit), so resuming after a manual
   skip works too, not just after a clean quit.
-- **Cold-start items play first.** `mpv <url>` plays `<url>` immediately;
-  the previously-saved playlist picks up automatically once it finishes.
+- **Cold-start items play first.** `mpv <url>` plays `<url>` immediately -
+  it's spliced into the saved playlist at your last-watched spot (pushing
+  that item, and everything after it, one slot later) rather than tacked
+  onto the very front. Once it finishes, playback carries straight on into
+  the item you were actually on and the rest of your history from there;
+  already-watched items before it are never replayed.
 
 ## Installation
 
