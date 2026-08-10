@@ -8,12 +8,8 @@ local options = require "mp.options"
 local utils = require "mp.utils"
 
 local opts = {
-    playlist_file = "~/.config/mpv/last_playlist.json",
+    playlist_file = "~/.local/state/mpv/last_playlist.json",
     osd_duration = 3,
-    -- By default nothing is ever removed from the saved playlist, including
-    -- items that finished playing - matches SPECS.md's "will not be
-    -- deleting items from the playlist". Set to yes to opt back into the
-    -- old behavior of dropping an item once it's been watched to the end.
     drop_finished_items = false,
 }
 options.read_options(opts, "perpetual_playlist")
