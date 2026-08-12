@@ -22,29 +22,6 @@ options.read_options(opts, "perpetual_playlist")
 -- once at load time via the `expand-path` command.
 local playlist_file = mp.command_native({"expand-path", opts.playlist_file})
 
--- Defensively ensure playlist_file's parent directory exists. io.open(path,
--- "w") (used throughout below) does not create missing parent directories
--- on its own - only the file itself, and only if the directory is already
--- there. Without this, a fresh install/machine where that directory
--- doesn't yet exist would make every save_saved_state() write silently
--- no-op (nil file handle, already guarded below, no error surfaced) -
--- nothing would ever persist and there'd be no visible symptom beyond
--- "playlist never resumes". mkdir -p is idempotent, so this is safe to run
--- unconditionally on every load, including if the user points
--- playlist_file at a different, not-yet-existing directory. Wrapped in
--- pcall since this is best-effort - failure here just leaves the original
--- silent-no-op behavior intact rather than crashing script load.
-pcall(function()
-    local playlist_dir = utils.split_path(playlist_file)
-    mp.command_native({
-        name = "subprocess",
-        args = { "mkdir", "-p", playlist_dir },
-        playback_only = false,
-        capture_stdout = false,
-        capture_stderr = false,
-    })
-end)
-
 local finished_all = false
 
 -- Helpers
@@ -153,6 +130,27 @@ local function save_saved_state(items, current)
         return
     end
     local f = io.open(playlist_file, "w")
+    if not f then
+        -- io.open(path, "w") does not create missing parent directories
+        -- on its own - only the file itself, and only if the directory
+        -- is already there. Without this fallback, a fresh
+        -- install/machine where that directory doesn't yet exist would
+        -- make every save silently no-op forever ("playlist never
+        -- resumes", no visible error). Only shell out to mkdir -p here,
+        -- in this rare fallback path (once, on actual write failure),
+        -- not proactively on every script load.
+        pcall(function()
+            local dir = utils.split_path(playlist_file) -- split_path returns (dir, filename); only dir wanted here
+            mp.command_native({
+                name = "subprocess",
+                args = { "mkdir", "-p", dir },
+                playback_only = false,
+                capture_stdout = false,
+                capture_stderr = false,
+            })
+        end)
+        f = io.open(playlist_file, "w")
+    end
     if f then
         f:write(utils.format_json({ items = items, current = current }))
         f:close()
