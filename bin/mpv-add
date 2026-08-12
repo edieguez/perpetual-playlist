@@ -9,10 +9,18 @@
 # regardless of -n/--next (cmdline items already play first on a fresh
 # instance, which is the same "play next" outcome).
 #
-# Requires `input-ipc-server=~/.config/mpv/mpv.sock` in mpv's config.
+# Requires `input-ipc-server=~~cache/mpv.sock` in mpv's config - mpv's own
+# ~~cache/ meta-path resolves differently per platform (confirmed
+# empirically, not just from docs): ~/.cache/mpv/ on Linux,
+# ~/Library/Caches/io.mpv/ on macOS. Mirrored here so this default matches
+# without the user needing to set MPV_SOCKET.
 set -eu
 
-SOCKET="${MPV_SOCKET:-$HOME/.config/mpv/mpv.sock}"
+case "$(uname -s)" in
+    Darwin) default_socket="$HOME/Library/Caches/io.mpv/mpv.sock" ;;
+    *)      default_socket="$HOME/.cache/mpv/mpv.sock" ;;
+esac
+SOCKET="${MPV_SOCKET:-$default_socket}"
 
 usage() {
     echo "Usage: mpv-add [-n|--next] <url-or-path> [url-or-path ...]" >&2
