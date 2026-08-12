@@ -8,7 +8,7 @@ accident).
 
 - **Persists the playlist.** On quit, on natural end-of-file, and whenever
   you navigate to another item, the full playlist (plus which item to
-  resume from) is saved to `~/.config/mpv/last_playlist.json`. Finished
+  resume from) is saved to `~/.local/state/mpv/last_playlist.json`. Finished
   items are kept, not deleted - set `drop_finished_items=yes` to opt back
   into removing them (see Configuration).
 - **Resumes from the exact position.** Rides on mpv's native
@@ -36,7 +36,11 @@ accident).
    idle=yes
 
    # Required only for bin/mpv-add (external "add a video" dispatcher).
-   input-ipc-server=~/.config/mpv/mpv.sock
+   # ~~cache/ is mpv's own cross-platform application-cache dir -
+   # resolves to ~/.cache/mpv/ on Linux, ~/Library/Caches/io.mpv/ on
+   # macOS. bin/mpv-add's own default mirrors this per-OS, so
+   # MPV_SOCKET only needs to be set for a nonstandard mpv config dir.
+   input-ipc-server=~~cache/mpv.sock
    ```
 4. (Optional) Put `bin/mpv-add` on your `PATH`, or invoke it by full path,
    for adding videos from outside mpv (see below).

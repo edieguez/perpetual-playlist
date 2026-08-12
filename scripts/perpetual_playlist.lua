@@ -8,6 +8,9 @@ local options = require "mp.options"
 local utils = require "mp.utils"
 
 local opts = {
+    -- XDG state dir, not ~/.config/mpv (which is itself a git-tracked
+    -- config repo for this setup) - keeps this runtime file out of
+    -- version control regardless of how script-opts/*.conf is managed.
     playlist_file = "~/.local/state/mpv/last_playlist.json",
     osd_duration = 3,
     drop_finished_items = false,
@@ -18,6 +21,29 @@ options.read_options(opts, "perpetual_playlist")
 -- directly to mpv commands, not to strings handed to Lua's io.open. Resolve
 -- once at load time via the `expand-path` command.
 local playlist_file = mp.command_native({"expand-path", opts.playlist_file})
+
+-- Defensively ensure playlist_file's parent directory exists. io.open(path,
+-- "w") (used throughout below) does not create missing parent directories
+-- on its own - only the file itself, and only if the directory is already
+-- there. Without this, a fresh install/machine where that directory
+-- doesn't yet exist would make every save_saved_state() write silently
+-- no-op (nil file handle, already guarded below, no error surfaced) -
+-- nothing would ever persist and there'd be no visible symptom beyond
+-- "playlist never resumes". mkdir -p is idempotent, so this is safe to run
+-- unconditionally on every load, including if the user points
+-- playlist_file at a different, not-yet-existing directory. Wrapped in
+-- pcall since this is best-effort - failure here just leaves the original
+-- silent-no-op behavior intact rather than crashing script load.
+pcall(function()
+    local playlist_dir = utils.split_path(playlist_file)
+    mp.command_native({
+        name = "subprocess",
+        args = { "mkdir", "-p", playlist_dir },
+        playback_only = false,
+        capture_stdout = false,
+        capture_stderr = false,
+    })
+end)
 
 local finished_all = false
 
