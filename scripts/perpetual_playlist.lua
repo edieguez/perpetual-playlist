@@ -125,6 +125,27 @@ local function read_saved_state()
 end
 
 local function save_saved_state(items, current)
+    -- Best-effort, unconditional backup of whatever's currently on disk
+    -- before this call's write (or removal, below) touches it. Pure
+    -- manual-recovery safety net for this whole class of bug, known or
+    -- not yet found - no parsing/validation, no auto-restore (so a
+    -- deliberate clear never gets silently revived); if a save ever
+    -- clobbers the playlist unexpectedly again, the previous generation
+    -- is still recoverable by hand:
+    --   cp last_playlist.json.bak last_playlist.json
+    do
+        local existing = io.open(playlist_file, "r")
+        if existing then
+            local content = existing:read("*a")
+            existing:close()
+            local backup = io.open(playlist_file .. ".bak", "w")
+            if backup then
+                backup:write(content)
+                backup:close()
+            end
+        end
+    end
+
     if #items == 0 then
         os.remove(playlist_file)
         return
@@ -274,12 +295,14 @@ end
 
 mp.add_timeout(0, on_startup)
 
-mp.register_event("file-loaded", function()
+local function run_pending_append()
     if pending_append then
         pending_append()
         pending_append = nil
     end
-end)
+end
+
+mp.register_event("file-loaded", run_pending_append)
 
 -- Whenever the current file stops, for any reason: proactively write its
 -- exact resume position, and update the saved state depending on whether
@@ -359,6 +382,34 @@ local function handle_finished(items, pos)
 end
 
 mp.register_event("end-file", function(event)
+    if pending_append then
+        -- Checking pending_append directly (not event.reason) is
+        -- reason-agnostic and correct by construction: if file-loaded had
+        -- fired for entry 0 (the "replace" target in on_startup),
+        -- run_pending_append() there would already have consumed and
+        -- nil'd it. Getting here with it still set means entry 0 never
+        -- successfully loaded (blocked/deleted/errored/quit
+        -- mid-resolution) - run the deferred append now anyway, so one
+        -- bad item (nearly always items[1], the OLDEST tracked entry,
+        -- which only gets more likely to have rotted the longer this
+        -- has been used) can't wipe out the rest of the saved history.
+        -- It appends items[2..N] and calls save_saved_state with the
+        -- FULL, correct list - return immediately so the generic branch
+        -- below doesn't clobber that with the stale one-item snapshot
+        -- on_unload captured (via snapshot_playlist()) before the append
+        -- ran.
+        --
+        -- If entry 0 itself was also the resume target (current == 0),
+        -- pending_append's own `current > 0` guard leaves playlist-pos
+        -- unset here. Verified empirically (mpv 0.41.0): mpv's core
+        -- auto-advances into the newly-appended entries on its own in
+        -- that case, playing straight through items[2], items[3], etc.
+        -- in order - no stall, no need to explicitly jump anywhere.
+        run_pending_append()
+        finished_all = false
+        return
+    end
+
     local items = last_items or snapshot_playlist()
     local pos = last_pos or 0
 
@@ -402,6 +453,15 @@ end)
 -- here should never surface as a visible stack trace on quit.
 mp.register_event("shutdown", function()
     local ok, err = pcall(function()
+        if pending_append then
+            -- Same fallback as the end-file handler above: the user quit
+            -- so fast that even end-file never fired for a still-resolving
+            -- entry 0. Without this, the rest of the saved history would
+            -- never get appended back and this backstop would persist the
+            -- same one-item snapshot end-file's fix guards against.
+            run_pending_append()
+            return
+        end
         if finished_all then
             return
         end
