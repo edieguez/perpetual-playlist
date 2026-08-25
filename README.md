@@ -43,12 +43,14 @@ accident).
 
 ## Adding a video
 
-Adding items to the playlist (clipboard paste, the external `mpv-add` CLI,
-YouTube playlist-URL expansion) is entirely
+Adding items to the playlist (clipboard paste, the external
+`mpv-remote add` CLI, YouTube playlist-URL expansion) is entirely
 [playlist-manager](https://github.com/edieguez/playlist-manager)'s job -
 this plugin only persists and resumes what's already there. Install
-playlist-manager alongside this plugin and see its README for `mpv-add`
-usage and the `input-ipc-server` config it requires.
+playlist-manager alongside this plugin, plus
+[mpv-remote](https://github.com/edieguez/mpv-remote) for the external CLI,
+and see their READMEs for usage and the `input-ipc-server` config it
+requires.
 
 ## Configuration
 
@@ -64,7 +66,7 @@ default it never deletes items on its own either (see
 `drop_finished_items` above). It has no add-item handling of its own;
 adding items, playlist editing/browsing, and playlist-URL expansion are
 all playlist-manager's job (see above) - it's a required companion, not
-just an optional one, for adding items via `bin/mpv-add`.
+just an optional one, for adding items via `mpv-remote add`.
 
 ## License
 
