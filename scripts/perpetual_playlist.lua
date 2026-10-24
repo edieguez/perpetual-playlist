@@ -125,32 +125,15 @@ local function read_saved_state()
 end
 
 local function save_saved_state(items, current)
-    -- Best-effort, unconditional backup of whatever's currently on disk
-    -- before this call's write (or removal, below) touches it. Pure
-    -- manual-recovery safety net for this whole class of bug, known or
-    -- not yet found - no parsing/validation, no auto-restore (so a
-    -- deliberate clear never gets silently revived); if a save ever
-    -- clobbers the playlist unexpectedly again, the previous generation
-    -- is still recoverable by hand:
-    --   cp last_playlist.json.bak last_playlist.json
-    do
-        local existing = io.open(playlist_file, "r")
-        if existing then
-            local content = existing:read("*a")
-            existing:close()
-            local backup = io.open(playlist_file .. ".bak", "w")
-            if backup then
-                backup:write(content)
-                backup:close()
-            end
-        end
-    end
-
     if #items == 0 then
         os.remove(playlist_file)
         return
     end
-    local f = io.open(playlist_file, "w")
+    -- Written to a temp file and renamed into place: rename(2) is atomic,
+    -- so a crash or kill mid-write can never leave a truncated file (which
+    -- read_saved_state would parse as an empty playlist).
+    local tmp_file = playlist_file .. ".tmp"
+    local f = io.open(tmp_file, "w")
     if not f then
         -- io.open(path, "w") does not create missing parent directories
         -- on its own - only the file itself, and only if the directory
@@ -170,11 +153,12 @@ local function save_saved_state(items, current)
                 capture_stderr = false,
             })
         end)
-        f = io.open(playlist_file, "w")
+        f = io.open(tmp_file, "w")
     end
     if f then
         f:write(utils.format_json({ items = items, current = current }))
         f:close()
+        os.rename(tmp_file, playlist_file)
     end
 end
 

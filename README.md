@@ -13,9 +13,8 @@ accident).
   into removing them (see Configuration). Survives even when the item
   being resumed itself fails to load (blocked, deleted, region-locked) -
   the rest of your history is never lost just because one entry rotted.
-  Every save also keeps a `last_playlist.json.bak` of the previous
-  generation, as a manual recovery net (`cp last_playlist.json.bak
-  last_playlist.json`) - not auto-restored, just there if you ever need it.
+  Saves are atomic (temp file + rename), so a crash mid-write can never
+  leave a truncated playlist behind.
 - **Resumes from the exact position.** Rides on mpv's native
   `watch_later`/`save-position-on-quit` mechanism, but proactively writes it
   on every item transition (not just on quit), so resuming after a manual
