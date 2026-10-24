@@ -67,6 +67,12 @@ adding items, playlist editing/browsing, and playlist-URL expansion are
 all playlist-manager's job (see above) - it's a required companion, not
 just an optional one, for adding items via `mpv-remote add`.
 
+## Development
+
+`make test` runs the spec suite under LuaJIT (what mpv embeds); `make
+test-all` runs it under every Lua 5.1-5.4 interpreter installed. No
+dependencies - the runner and a small fake mpv live in `tests/`.
+
 ## License
 
 MPL-2.0, see [LICENSE](LICENSE).

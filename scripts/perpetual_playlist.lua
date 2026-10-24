@@ -179,6 +179,28 @@ local function snapshot_playlist()
     return items
 end
 
+-- Splices the (deduped) command-line items into the saved list right at
+-- `current`'s slot, so they play first and the item the user was on
+-- follows. Returns the merged list and how many items were new. See
+-- on_startup for the full rationale.
+local function merge_cmdline(saved_items, current, cmdline_items)
+    if #cmdline_items == 0 then
+        return saved_items, 0
+    end
+    local cmdline_unique = dedupe_items(cmdline_items, saved_items)
+    local merged = {}
+    for i = 1, current do -- items before `current` (0-indexed): untouched history
+        table.insert(merged, saved_items[i])
+    end
+    for _, item in ipairs(cmdline_unique) do
+        table.insert(merged, item)
+    end
+    for i = current + 1, #saved_items do -- `current` onward (0-indexed): unchanged relative order
+        table.insert(merged, saved_items[i])
+    end
+    return merged, #cmdline_unique
+end
+
 -- Startup: merge saved state with command-line args
 --
 -- Command-line items (if any) are already queued as playlist entries by the
@@ -234,26 +256,8 @@ local function on_startup()
     -- duplicate baked into last_playlist.json, since that cleanup only
     -- touches mpv's live playlist and runs after this function has already
     -- saved state to disk.
-    local items = saved.items
     local current = saved.current
-    local new_count = 0
-
-    if #cmdline_items > 0 then
-        local cmdline_unique = dedupe_items(cmdline_items, saved.items)
-        new_count = #cmdline_unique
-
-        local merged = {}
-        for i = 1, current do -- items before `current` (0-indexed): untouched history
-            table.insert(merged, saved.items[i])
-        end
-        for _, item in ipairs(cmdline_unique) do
-            table.insert(merged, item)
-        end
-        for i = current + 1, #saved.items do -- `current` onward (0-indexed): unchanged relative order
-            table.insert(merged, saved.items[i])
-        end
-        items = merged
-    end
+    local items, new_count = merge_cmdline(saved.items, current, cmdline_items)
 
     mp.commandv("loadfile", items[1], "replace")
 
@@ -457,3 +461,13 @@ mp.register_event("shutdown", function()
         require("mp.msg").warn("shutdown handler failed: " .. tostring(err))
     end
 end)
+
+-- mpv ignores a script's return value; tests/ use it to reach the pure
+-- state functions without a running player.
+return {
+    normalize_url = normalize_url,
+    dedupe_items = dedupe_items,
+    read_saved_state = read_saved_state,
+    save_saved_state = save_saved_state,
+    merge_cmdline = merge_cmdline,
+}
